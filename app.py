@@ -24,7 +24,6 @@ def calculate_rsi(series, period=14):
 def get_robust_data(ticker, interval):
     df = pd.DataFrame()
     
-    # Ha rövid idősíkot kérsz, csak az utolsó 1-2 napot kérjük, hogy ne húzza szét a chartot
     if interval in ["1m", "5m"]:
         period = "1d"
     elif interval in ["15m", "30m", "1h"]:
@@ -37,7 +36,6 @@ def get_robust_data(ticker, interval):
     except:
         pass
         
-    # Ha az 1d period túl kevés lenne percesen, fallback 5 napra
     if df.empty and interval in ["1m", "5m"]:
         try:
             df = yf.download(ticker, interval=interval, period="5d", progress=False)
@@ -65,7 +63,6 @@ def get_robust_data(ticker, interval):
                 
     df.dropna(subset=['Close'], inplace=True)
     
-    # Biztosítjuk, hogy csak az utolsó legfrissebb gyertyák látszódjanak, így nem húzza szét napokra a skálát
     if len(df) > 80:
         df = df.iloc[-80:]
         
@@ -127,7 +124,7 @@ def analyze_chart(image_path, api_key, pair_name, style_name):
     }}
     """
     response = client.models.generate_content(
-        model='gemini-2.0-flash',
+        model='gemini-3.6-flash',
         contents=[image, prompt],
         config=types.GenerateContentConfig(response_mime_type="application/json"),
     )
