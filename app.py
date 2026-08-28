@@ -3,13 +3,13 @@ import os
 import streamlit as st
 from PIL import Image
 import mplfinance as mpf
-import yfinance as yf
 import pandas as pd
+import requests
 from google import genai
 from google.genai import types
 
 st.set_page_config(
-    page_title="Mesterlövész Chart Analyzer",
+    page_title="Mesterlövész Chart Analyzer (Twelve Data)",
     page_icon="🎯",
     layout="centered"
 )
@@ -21,55 +21,46 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-def get_robust_data(ticker, interval):
-    df = pd.DataFrame()
+def get_twelvedata_data(symbol, interval):
+    # Ingyenes Twelve Data kulcs teszteléshez megteszi, de saját kulccsal a legjobb
+    api_key = "demo" 
     
-    if interval in ["1m", "5m"]:
-        period = "1d"
-    elif interval in ["15m", "30m", "1h"]:
-        period = "5d"
-    else:
-        period = "1mo"
-            
-    try:
-        df = yf.download(ticker, interval=interval, period=period, progress=False)
-    except:
-        pass
+    twelve_intervals = {
+        "1m": "1min",
+        "5m": "5min",
+        "15m": "15min",
+        "1d": "1day"
+    }
+    
+    iv = twelve_intervals.get(interval, "5min")
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={iv}&outputsize=80&apikey={api_key}"
+    
+    response = requests.get(url)
+    data = response.json()
+    
+    if "values" not in data:
+        raise ValueError(f"Hiba a Twelve Data letöltés során: {data.get('message', 'Ismeretlen hiba')}")
         
-    if df.empty and interval in ["1m", "5m"]:
-        try:
-            df = yf.download(ticker, interval=interval, period="5d", progress=False)
-        except:
-            pass
+    df = pd.DataFrame(data["values"])
+    df['datetime'] = pd.to_datetime(df['datetime'])
+    df.set_index('datetime', inplace=True)
+    df = df.sort_index()
+    
+    for col in ['open', 'high', 'low', 'close']:
+        df[col] = df[col].astype(float)
         
-    if df.empty:
-        try:
-            df = yf.download(ticker, interval="1d", period="3mo", progress=False)
-        except:
-            pass
-
-    if df.empty:
-        raise ValueError(f"A kiválasztott instrumentumhoz ({ticker}) jelenleg nem érhető el adat.")
-        
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-        
-    required_cols = ['Open', 'High', 'Low', 'Close']
-    for col in required_cols:
-        if col not in df.columns:
-            lower_col = col.lower()
-            if lower_col in df.columns:
-                df.rename(columns={lower_col: col}, inplace=True)
-                
+    df.rename(columns={
+        'open': 'Open',
+        'high': 'High',
+        'low': 'Low',
+        'close': 'Close'
+    }, inplace=True)
+    
     df.dropna(subset=['Close'], inplace=True)
-    
-    if len(df) > 80:
-        df = df.iloc[-80:]
-        
     return df
 
 def generate_chart_image(ticker, interval, filename="current_chart.png"):
-    df = get_robust_data(ticker, interval)
+    df = get_twelvedata_data(ticker, interval)
     
     if len(df) < 10:
         raise ValueError("Túl kevés gyertya érkezett az elemzéshez.")
@@ -149,9 +140,9 @@ def calculate_position_size(balance, risk_pct, entry, sl, ticker):
         price_delta = abs(float(entry) - float(sl))
         if price_delta <= 0: return None, None, "Hiba"
         
-        if "GC=F" in ticker or "XAU" in ticker:
+        if "XAU" in ticker:
             return risk_usd, f"{(risk_usd / (price_delta * 100.0)):.2f} Lot", None
-        elif "USD" in ticker and "BTC" not in ticker:
+        elif "EUR" in ticker or "GBP" in ticker:
             return risk_usd, f"{(risk_usd / price_delta / 100000.0):.2f} Lot", None
         elif "BTC" in ticker:
             return risk_usd, f"{(risk_usd / price_delta):.4f} BTC", None
@@ -160,17 +151,17 @@ def calculate_position_size(balance, risk_pct, entry, sl, ticker):
     except:
         return None, None, "Hiba"
 
-st.title("🎯 Mesterlövész Chart Analyzer")
-st.markdown("Stabil, megbízható piaci elemző rendszer.")
+st.title("🎯 Mesterlövész Chart Analyzer (Twelve Data)")
+st.markdown("Valós idejű XAU/USD skalp elemző rendszer.")
 
 st.sidebar.header("⚙️ Konfiguráció")
 gemini_api_input = st.sidebar.text_input("Gemini API Kulcs (AI)", value=os.environ.get("GEMINI_API_KEY", ""), type="password")
 
 assets = {
-    "🥇 Arany Futures (GC=F) - Ajánlott": "GC=F",
-    "📊 EUR/USD (EURUSD=X)": "EURUSD=X",
-    "💷 GBP/USD (GBPUSD=X)": "GBPUSD=X",
-    "₿ Bitcoin (BTC-USD)": "BTC-USD"
+    "🥇 XAU/USD (Arany Spot) - Ajánlott": "XAU/USD",
+    "📊 EUR/USD": "EUR/USD",
+    "💷 GBP/USD": "GBP/USD",
+    "₿ BTC/USD": "BTC/USD"
 }
 
 styles = {
@@ -193,7 +184,7 @@ if st.sidebar.button("🚀 Elemzés Indítása", use_container_width=True):
         ticker = assets[selected_asset_name]
         interval = styles[selected_style_name]
         
-        with st.spinner(f"Adatok lekérése & AI Elemzés ({ticker})..."):
+        with st.spinner(f"Twelve Data lekérés & AI Elemzés ({ticker})..."):
             try:
                 img_path = generate_chart_image(ticker, interval)
                 data = analyze_chart(img_path, gemini_api_input, selected_asset_name, selected_style_name)
