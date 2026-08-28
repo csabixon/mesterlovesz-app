@@ -158,10 +158,10 @@ finnhub_api_input = st.sidebar.text_input("Finnhub API Kulcs (Adat)", type="pass
 gemini_api_input = st.sidebar.text_input("Gemini API Kulcs (AI)", value=os.environ.get("GEMINI_API_KEY", ""), type="password")
 
 assets = {
-    "🥇 Arany Spot (FX:XAUUSD)": "FX:XAUUSD",
-    "📊 EUR/USD (FX:EURUSD)": "FX:EURUSD",
-    "💷 GBP/USD (FX:GBPUSD)": "FX:GBPUSD",
-    "₿ Bitcoin (BINANCE:BTCUSDT)": "BINANCE:BTCUSDT"
+    "🥇 Arany Spot (FX:XAUUSD)": "FX:XAU/USD",
+    "📊 EUR/USD (FX:EURUSD)": "FX:EUR/USD",
+    "💷 GBP/USD (FX:GBPUSD)": "FX:GBP/USD",
+    "₿ Bitcoin (BINANCE:BTCUSDT)": "BINANCE:BTC/USDT"
 }
 
 styles = {
