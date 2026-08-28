@@ -9,7 +9,7 @@ from google import genai
 from google.genai import types
 
 st.set_page_config(
-    page_title="Mesterlövész Chart Analyzer",
+    page_title="Mesterlövész Chart Analyzer (Finnhub Élő)",
     page_icon="🎯",
     layout="centered"
 )
@@ -21,32 +21,52 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-def get_twelvedata_chart(ticker, interval, api_key, outputsize=80):
-    url = f"https://api.twelvedata.com/time_series?symbol={ticker}&interval={interval}&outputsize={outputsize}&apikey={api_key}"
+def get_finnhub_resolution(interval_name):
+    # Finnhub resolution map: 1, 5, 15, 30, 60, D, W, M
+    mapping = {
+        "1min": "1",
+        "5min": "5",
+        "15min": "15",
+        "1day": "D"
+    }
+    return mapping.get(interval_name, "1")
+
+def get_finnhub_chart(ticker, interval, api_key):
+    # Finnhub stock/forex candles endpoint
+    # We calculate timestamps for the last few days to ensure enough bars for 1m
+    import time
+    resolution = get_finnhub_resolution(interval)
+    
+    # 3 days ago to now
+    to_time = int(time.time())
+    from_time = to_time - (3 * 24 * 60 * 60)
+    
+    url = f"https://finnhub.io/api/v1/stock/candle?symbol={ticker}&resolution={resolution}&from={from_time}&to={to_time}&token={api_key}"
     response = requests.get(url)
     data = response.json()
     
-    if 'status' in data and data['status'] == 'error':
-        raise ValueError(f"Twelve Data Hiba: {data.get('message')}")
+    if 's' not in data or data['s'] != 'ok':
+        raise ValueError(f"Finnhub Hiba vagy nincs elég adat a {ticker} szimbólumhoz. Ellenőrizd az API kulcsot!")
         
-    if 'values' not in data:
-        raise ValueError(f"Nem érkezett adat a {ticker} instrumentumhoz. Ellenőrizd az API kulcsot.")
-        
-    df = pd.DataFrame(data['values'])
-    df['datetime'] = pd.to_datetime(df['datetime'])
+    df = pd.DataFrame({
+        'datetime': pd.to_datetime(data['t'], unit='s'),
+        'Open': data['o'],
+        'High': data['h'],
+        'Low': data['l'],
+        'Close': data['c'],
+        'Volume': data['v']
+    })
+    
     df.set_index('datetime', inplace=True)
     df.sort_index(inplace=True)
-    
-    for col in ['open', 'high', 'low', 'close', 'volume']:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-    df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
     return df
 
 def generate_chart_image(ticker, interval, api_key, filename="current_chart.png"):
-    df = get_twelvedata_chart(ticker, interval, api_key)
+    df = get_finnhub_chart(ticker, interval, api_key)
     
+    if len(df) < 20:
+        raise ValueError("Túl kevés gyertya érkezett az elemzéshez ezen az idősíkon.")
+        
     df['RSI'] = calculate_rsi(df['Close'])
     
     mc = mpf.make_marketcolors(up='green', down='red', edge='inherit', wick='inherit', volume='in')
@@ -133,20 +153,18 @@ def calculate_position_size(balance, risk_pct, entry, sl, ticker):
     except:
         return None, None, "Hiba"
 
-st.title("🎯 Mesterlövész Chart Analyzer (Élő)")
-st.markdown("Valós idejű, késés nélküli adatokkal hajtva (Twelve Data).")
+st.title("🎯 Mesterlövész Chart Analyzer (Finnhub Élő)")
+st.markdown("Valós idejű, gyors 1 perces adatok OANDA feed alapján (Finnhub).")
 
 st.sidebar.header("⚙️ API Kulcsok")
-twelve_api_input = st.sidebar.text_input("Twelve Data API Kulcs (Adat)", type="password")
+finnhub_api_input = st.sidebar.text_input("Finnhub API Kulcs (Adat)", type="password")
 gemini_api_input = st.sidebar.text_input("Gemini API Kulcs (AI)", value=os.environ.get("GEMINI_API_KEY", ""), type="password")
 
 assets = {
-    "🥇 Arany Spot (XAU/USD)": "XAU/USD",
-    "🥇 Arany Futures (GC)": "GC",
-    "📊 EUR/USD (Forex)": "EUR/USD",
-    "💷 GBP/USD (Forex)": "GBP/USD",
-    "🇺🇸 S&P 500 Index": "SPX",
-    "₿ Bitcoin (BTC/USD)": "BTC/USD"
+    "🥇 Arany Spot (OANDA:XAU_USD)": "OANDA:XAU_USD",
+    "📊 EUR/USD (OANDA:EUR_USD)": "OANDA:EUR_USD",
+    "💷 GBP/USD (OANDA:GBP_USD)": "OANDA:GBP_USD",
+    "₿ Bitcoin (BINANCE:BTCUSDT)": "BINANCE:BTCUSDT"
 }
 
 styles = {
@@ -163,15 +181,15 @@ balance_input = st.sidebar.text_input("Számla Tőke ($)", value="10000")
 risk_input = st.sidebar.text_input("Kockázat (%)", value="1.0")
 
 if st.sidebar.button("🚀 Elemzés Indítása", use_container_width=True):
-    if not twelve_api_input or not gemini_api_input:
+    if not finnhub_api_input or not gemini_api_input:
         st.error("Kérlek add meg mindkét API kulcsot az oldalsávban!")
     else:
         ticker = assets[selected_asset_name]
         interval = styles[selected_style_name]
         
-        with st.spinner(f"Élő adatok letöltése & AI Elemzés ({ticker})..."):
+        with st.spinner(f"Finnhub adatok letöltése & AI Elemzés ({ticker})..."):
             try:
-                img_path = generate_chart_image(ticker, interval, twelve_api_input)
+                img_path = generate_chart_image(ticker, interval, finnhub_api_input)
                 data = analyze_chart(img_path, gemini_api_input, selected_asset_name, selected_style_name)
                 
                 dir_val, entry, sl, tp = data.get('direction', 'NEUTRAL'), data.get('entry'), data.get('sl'), data.get('tp')
