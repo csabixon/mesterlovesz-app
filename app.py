@@ -22,7 +22,6 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 def get_finnhub_resolution(interval_name):
-    # Finnhub resolution map: 1, 5, 15, 30, 60, D, W, M
     mapping = {
         "1min": "1",
         "5min": "5",
@@ -32,21 +31,19 @@ def get_finnhub_resolution(interval_name):
     return mapping.get(interval_name, "1")
 
 def get_finnhub_chart(ticker, interval, api_key):
-    # Finnhub stock/forex candles endpoint
-    # We calculate timestamps for the last few days to ensure enough bars for 1m
     import time
     resolution = get_finnhub_resolution(interval)
     
-    # 3 days ago to now
+    # 5 napra növeljük az időablakot, hogy biztosan legyen elég adat (hétvégén/ünnepnapokon is)
     to_time = int(time.time())
-    from_time = to_time - (3 * 24 * 60 * 60)
+    from_time = to_time - (5 * 24 * 60 * 60)
     
     url = f"https://finnhub.io/api/v1/stock/candle?symbol={ticker}&resolution={resolution}&from={from_time}&to={to_time}&token={api_key}"
     response = requests.get(url)
     data = response.json()
     
     if 's' not in data or data['s'] != 'ok':
-        raise ValueError(f"Finnhub Hiba vagy nincs elég adat a {ticker} szimbólumhoz. Ellenőrizd az API kulcsot!")
+        raise ValueError(f"Finnhub Hiba: Nem érkezett adat a '{ticker}' szimbólumhoz. (Válasz: {data.get('s', 'ismeretlen')})")
         
     df = pd.DataFrame({
         'datetime': pd.to_datetime(data['t'], unit='s'),
@@ -64,7 +61,7 @@ def get_finnhub_chart(ticker, interval, api_key):
 def generate_chart_image(ticker, interval, api_key, filename="current_chart.png"):
     df = get_finnhub_chart(ticker, interval, api_key)
     
-    if len(df) < 20:
+    if len(df) < 10:
         raise ValueError("Túl kevés gyertya érkezett az elemzéshez ezen az idősíkon.")
         
     df['RSI'] = calculate_rsi(df['Close'])
@@ -154,16 +151,16 @@ def calculate_position_size(balance, risk_pct, entry, sl, ticker):
         return None, None, "Hiba"
 
 st.title("🎯 Mesterlövész Chart Analyzer (Finnhub Élő)")
-st.markdown("Valós idejű, gyors 1 perces adatok OANDA feed alapján (Finnhub).")
+st.markdown("Valós idejű, gyors adatok Finnhub feed alapján.")
 
 st.sidebar.header("⚙️ API Kulcsok")
 finnhub_api_input = st.sidebar.text_input("Finnhub API Kulcs (Adat)", type="password")
 gemini_api_input = st.sidebar.text_input("Gemini API Kulcs (AI)", value=os.environ.get("GEMINI_API_KEY", ""), type="password")
 
 assets = {
-    "🥇 Arany Spot (OANDA:XAU_USD)": "OANDA:XAU_USD",
-    "📊 EUR/USD (OANDA:EUR_USD)": "OANDA:EUR_USD",
-    "💷 GBP/USD (OANDA:GBP_USD)": "OANDA:GBP_USD",
+    "🥇 Arany Spot (FX:XAUUSD)": "FX:XAUUSD",
+    "📊 EUR/USD (FX:EURUSD)": "FX:EURUSD",
+    "💷 GBP/USD (FX:GBPUSD)": "FX:GBPUSD",
     "₿ Bitcoin (BINANCE:BTCUSDT)": "BINANCE:BTCUSDT"
 }
 
