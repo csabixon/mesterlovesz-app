@@ -22,22 +22,36 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 def get_robust_data(ticker, interval):
-    # Időszak beállítása idősík alapján
-    if interval in ["1m", "5m"]:
-        period = "5d" # A Yahoo az 1m/5m adatokhoz max 5-7 napot enged
-    elif interval in ["15m", "30m", "1h"]:
-        period = "1mo"
-    else:
-        period = "3mo"
-        
-    df = yf.download(ticker, interval=interval, period=period, progress=False)
+    df = pd.DataFrame()
     
-    # Ha üres, próbáljuk meg napi (1d) adatokkal fallbackként, hogy soha ne omoljon össze
-    if df.empty:
-        df = yf.download(ticker, interval="1d", period="3mo", progress=False)
+    # Ha rövid idősíkot kérsz, csak az utolsó 1-2 napot kérjük, hogy ne húzza szét a chartot
+    if interval in ["1m", "5m"]:
+        period = "1d"
+    elif interval in ["15m", "30m", "1h"]:
+        period = "5d"
+    else:
+        period = "1mo"
+            
+    try:
+        df = yf.download(ticker, interval=interval, period=period, progress=False)
+    except:
+        pass
+        
+    # Ha az 1d period túl kevés lenne percesen, fallback 5 napra
+    if df.empty and interval in ["1m", "5m"]:
+        try:
+            df = yf.download(ticker, interval=interval, period="5d", progress=False)
+        except:
+            pass
         
     if df.empty:
-        raise ValueError(f"Nem sikerült adatot lekérni a(z) {ticker} szimbólumhoz.")
+        try:
+            df = yf.download(ticker, interval="1d", period="3mo", progress=False)
+        except:
+            pass
+
+    if df.empty:
+        raise ValueError(f"A kiválasztott instrumentumhoz ({ticker}) jelenleg nem érhető el adat.")
         
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
@@ -50,13 +64,18 @@ def get_robust_data(ticker, interval):
                 df.rename(columns={lower_col: col}, inplace=True)
                 
     df.dropna(subset=['Close'], inplace=True)
+    
+    # Biztosítjuk, hogy csak az utolsó legfrissebb gyertyák látszódjanak, így nem húzza szét napokra a skálát
+    if len(df) > 80:
+        df = df.iloc[-80:]
+        
     return df
 
 def generate_chart_image(ticker, interval, filename="current_chart.png"):
     df = get_robust_data(ticker, interval)
     
-    if len(df) < 15:
-        raise ValueError("Túl kevés gyertya érkezett az elemzéshez az adott idősíkon.")
+    if len(df) < 10:
+        raise ValueError("Túl kevés gyertya érkezett az elemzéshez.")
         
     df['RSI'] = calculate_rsi(df['Close'])
     
@@ -151,8 +170,7 @@ st.sidebar.header("⚙️ Konfiguráció")
 gemini_api_input = st.sidebar.text_input("Gemini API Kulcs (AI)", value=os.environ.get("GEMINI_API_KEY", ""), type="password")
 
 assets = {
-    "🥇 Arany Futures (GC=F)": "GC=F",
-    "🥇 Arany Spot (XAUUSD=X)": "XAUUSD=X",
+    "🥇 Arany Futures (GC=F) - Ajánlott": "GC=F",
     "📊 EUR/USD (EURUSD=X)": "EURUSD=X",
     "💷 GBP/USD (GBPUSD=X)": "GBPUSD=X",
     "₿ Bitcoin (BTC-USD)": "BTC-USD"
@@ -178,7 +196,7 @@ if st.sidebar.button("🚀 Elemzés Indítása", use_container_width=True):
         ticker = assets[selected_asset_name]
         interval = styles[selected_style_name]
         
-        with st.spinner(f"Adatbázis elérése & AI Elemzés ({ticker})..."):
+        with st.spinner(f"Adatok lekérése & AI Elemzés ({ticker})..."):
             try:
                 img_path = generate_chart_image(ticker, interval)
                 data = analyze_chart(img_path, gemini_api_input, selected_asset_name, selected_style_name)
