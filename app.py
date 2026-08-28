@@ -1,15 +1,15 @@
 import json
 import os
-import requests
 import streamlit as st
 from PIL import Image
 import mplfinance as mpf
+import yfinance as yf
 import pandas as pd
 from google import genai
 from google.genai import types
 
 st.set_page_config(
-    page_title="Mesterlövész Chart Analyzer (Élő)",
+    page_title="Mesterlövész Chart Analyzer",
     page_icon="🎯",
     layout="centered"
 )
@@ -21,42 +21,42 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-def get_binance_chart(symbol, interval):
-    # Binance API idősík mapping
-    interval_map = {
-        "1min": "1m",
-        "5min": "5m",
-        "15min": "15m",
-        "1day": "1d"
-    }
-    binance_interval = interval_map.get(interval, "1m")
-    
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={binance_interval}&limit=100"
-    response = requests.get(url)
-    data = response.json()
-    
-    if not isinstance(data, list) or len(data) == 0:
-        raise ValueError(f"Nem érkezett adat a {symbol} szimbólumhoz a Binance-ról.")
+def get_robust_data(ticker, interval):
+    # Időszak beállítása idősík alapján
+    if interval in ["1m", "5m"]:
+        period = "5d" # A Yahoo az 1m/5m adatokhoz max 5-7 napot enged
+    elif interval in ["15m", "30m", "1h"]:
+        period = "1mo"
+    else:
+        period = "3mo"
         
-    df = pd.DataFrame(data, columns=[
-        'Open_time', 'Open', 'High', 'Low', 'Close', 'Volume',
-        'Close_time', 'Quote_asset_volume', 'Number_of_trades',
-        'Taker_buy_base_asset_volume', 'Taker_buy_quote_asset_volume', 'Ignore'
-    ])
+    df = yf.download(ticker, interval=interval, period=period, progress=False)
     
-    # Adatok konvertálása számmá
-    for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
-        df[col] = pd.to_numeric(df[col])
+    # Ha üres, próbáljuk meg napi (1d) adatokkal fallbackként, hogy soha ne omoljon össze
+    if df.empty:
+        df = yf.download(ticker, interval="1d", period="3mo", progress=False)
         
-    df['datetime'] = pd.to_datetime(df['Open_time'], unit='ms')
-    df.set_index('datetime', inplace=True)
-    return df[['Open', 'High', 'Low', 'Close', 'Volume']]
+    if df.empty:
+        raise ValueError(f"Nem sikerült adatot lekérni a(z) {ticker} szimbólumhoz.")
+        
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+        
+    required_cols = ['Open', 'High', 'Low', 'Close']
+    for col in required_cols:
+        if col not in df.columns:
+            lower_col = col.lower()
+            if lower_col in df.columns:
+                df.rename(columns={lower_col: col}, inplace=True)
+                
+    df.dropna(subset=['Close'], inplace=True)
+    return df
 
 def generate_chart_image(ticker, interval, filename="current_chart.png"):
-    df = get_binance_chart(ticker, interval)
+    df = get_robust_data(ticker, interval)
     
     if len(df) < 15:
-        raise ValueError("Túl kevés gyertya érkezett az elemzéshez.")
+        raise ValueError("Túl kevés gyertya érkezett az elemzéshez az adott idősíkon.")
         
     df['RSI'] = calculate_rsi(df['Close'])
     
@@ -133,8 +133,10 @@ def calculate_position_size(balance, risk_pct, entry, sl, ticker):
         price_delta = abs(float(entry) - float(sl))
         if price_delta <= 0: return None, None, "Hiba"
         
-        if "PAXG" in ticker:
+        if "GC=F" in ticker or "XAU" in ticker:
             return risk_usd, f"{(risk_usd / (price_delta * 100.0)):.2f} Lot", None
+        elif "USD" in ticker and "BTC" not in ticker:
+            return risk_usd, f"{(risk_usd / price_delta / 100000.0):.2f} Lot", None
         elif "BTC" in ticker:
             return risk_usd, f"{(risk_usd / price_delta):.4f} BTC", None
         else:
@@ -142,23 +144,25 @@ def calculate_position_size(balance, risk_pct, entry, sl, ticker):
     except:
         return None, None, "Hiba"
 
-st.title("🎯 Mesterlövész Chart Analyzer (Élő)")
-st.markdown("Valós idejű, másodpercre pontos perces adatok.")
+st.title("🎯 Mesterlövész Chart Analyzer")
+st.markdown("Stabil, megbízható piaci elemző rendszer.")
 
 st.sidebar.header("⚙️ Konfiguráció")
 gemini_api_input = st.sidebar.text_input("Gemini API Kulcs (AI)", value=os.environ.get("GEMINI_API_KEY", ""), type="password")
 
 assets = {
-    "🥇 Arany Spot (PAXG / USD)": "PAXGUSDT",
-    "₿ Bitcoin (BTC / USDT)": "BTCUSDT",
-    "イー Ethereum (ETH / USDT)": "ETHUSDT"
+    "🥇 Arany Futures (GC=F)": "GC=F",
+    "🥇 Arany Spot (XAUUSD=X)": "XAUUSD=X",
+    "📊 EUR/USD (EURUSD=X)": "EURUSD=X",
+    "💷 GBP/USD (GBPUSD=X)": "GBPUSD=X",
+    "₿ Bitcoin (BTC-USD)": "BTC-USD"
 }
 
 styles = {
-    "🚀 Mikro-Skalp (1 perces)": "1min",
-    "⚡ Skalp (5 perces)": "5min",
-    "⚡ Skalp (15 perces)": "15min",
-    "🌊 Swing (Napi)": "1day"
+    "🚀 Mikro-Skalp (1 perces)": "1m",
+    "⚡ Skalp (5 perces)": "5m",
+    "⚡ Skalp (15 perces)": "15m",
+    "🌊 Swing (Napi)": "1d"
 }
 
 st.sidebar.header("📊 Kereskedés")
@@ -174,7 +178,7 @@ if st.sidebar.button("🚀 Elemzés Indítása", use_container_width=True):
         ticker = assets[selected_asset_name]
         interval = styles[selected_style_name]
         
-        with st.spinner(f"Valós idejű adatok betöltése & AI Elemzés ({ticker})..."):
+        with st.spinner(f"Adatbázis elérése & AI Elemzés ({ticker})..."):
             try:
                 img_path = generate_chart_image(ticker, interval)
                 data = analyze_chart(img_path, gemini_api_input, selected_asset_name, selected_style_name)
