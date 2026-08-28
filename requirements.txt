@@ -1,0 +1,6 @@
+streamlit
+mplfinance
+yfinance
+pillow
+google-genai
+pandas
