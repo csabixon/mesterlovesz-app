@@ -9,7 +9,7 @@ from google import genai
 from google.genai import types
 
 st.set_page_config(
-    page_title="Mesterlövész Chart Analyzer (Twelve Data)",
+    page_title="Mesterlövész Chart Analyzer",
     page_icon="🎯",
     layout="centered"
 )
@@ -21,10 +21,7 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-def get_twelvedata_data(symbol, interval):
-    # Ingyenes Twelve Data kulcs teszteléshez megteszi, de saját kulccsal a legjobb
-    api_key = "demo" 
-    
+def get_twelvedata_data(symbol, interval, twelvedata_api_key):
     twelve_intervals = {
         "1m": "1min",
         "5m": "5min",
@@ -33,13 +30,13 @@ def get_twelvedata_data(symbol, interval):
     }
     
     iv = twelve_intervals.get(interval, "5min")
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={iv}&outputsize=80&apikey={api_key}"
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={iv}&outputsize=80&apikey={twelvedata_api_key}"
     
     response = requests.get(url)
     data = response.json()
     
     if "values" not in data:
-        raise ValueError(f"Hiba a Twelve Data letöltés során: {data.get('message', 'Ismeretlen hiba')}")
+        raise ValueError(f"Hiba a Twelve Data letöltés során: {data.get('message', 'Ismeretlen hiba (ellenőrizd a Twelve Data kulcsot!)')}")
         
     df = pd.DataFrame(data["values"])
     df['datetime'] = pd.to_datetime(df['datetime'])
@@ -59,8 +56,8 @@ def get_twelvedata_data(symbol, interval):
     df.dropna(subset=['Close'], inplace=True)
     return df
 
-def generate_chart_image(ticker, interval, filename="current_chart.png"):
-    df = get_twelvedata_data(ticker, interval)
+def generate_chart_image(ticker, interval, twelvedata_api_key, filename="current_chart.png"):
+    df = get_twelvedata_data(ticker, interval, twelvedata_api_key)
     
     if len(df) < 10:
         raise ValueError("Túl kevés gyertya érkezett az elemzéshez.")
@@ -86,8 +83,8 @@ def generate_chart_image(ticker, interval, filename="current_chart.png"):
     )
     return filename
 
-def analyze_chart(image_path, api_key, pair_name, style_name):
-    client = genai.Client(api_key=api_key)
+def analyze_chart(image_path, gemini_api_key, pair_name, style_name):
+    client = genai.Client(api_key=gemini_api_key)
     image = Image.open(image_path)
     
     prompt = f"""
@@ -151,10 +148,11 @@ def calculate_position_size(balance, risk_pct, entry, sl, ticker):
     except:
         return None, None, "Hiba"
 
-st.title("🎯 Mesterlövész Chart Analyzer (Twelve Data)")
+st.title("🎯 Mesterlövész Chart Analyzer")
 st.markdown("Valós idejű XAU/USD skalp elemző rendszer.")
 
 st.sidebar.header("⚙️ Konfiguráció")
+twelvedata_api_input = st.sidebar.text_input("Twelve Data API Kulcs", value="demo", type="password")
 gemini_api_input = st.sidebar.text_input("Gemini API Kulcs (AI)", value=os.environ.get("GEMINI_API_KEY", ""), type="password")
 
 assets = {
@@ -180,13 +178,15 @@ risk_input = st.sidebar.text_input("Kockázat (%)", value="1.0")
 if st.sidebar.button("🚀 Elemzés Indítása", use_container_width=True):
     if not gemini_api_input:
         st.error("Kérlek add meg a Gemini API kulcsot az oldalsávban!")
+    elif not twelvedata_api_input:
+        st.error("Kérlek add meg a Twelve Data API kulcsot az oldalsávban!")
     else:
         ticker = assets[selected_asset_name]
         interval = styles[selected_style_name]
         
         with st.spinner(f"Twelve Data lekérés & AI Elemzés ({ticker})..."):
             try:
-                img_path = generate_chart_image(ticker, interval)
+                img_path = generate_chart_image(ticker, interval, twelvedata_api_input)
                 data = analyze_chart(img_path, gemini_api_input, selected_asset_name, selected_style_name)
                 
                 dir_val, entry, sl, tp = data.get('direction', 'NEUTRAL'), data.get('entry'), data.get('sl'), data.get('tp')
