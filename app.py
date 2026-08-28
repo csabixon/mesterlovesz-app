@@ -141,14 +141,12 @@ twelve_api_input = st.sidebar.text_input("Twelve Data API Kulcs (Adat)", type="p
 gemini_api_input = st.sidebar.text_input("Gemini API Kulcs (AI)", value=os.environ.get("GEMINI_API_KEY", ""), type="password")
 
 assets = {
-    "🥇 Arany Forex (XAU/USD)": "XAUUSD=X",
-    "🥇 Arany Futures (GC=F)": "GC=F",
-    "📊 EUR/USD (Forex)": "EURUSD=X",
-    "💷 GBP/USD (Forex)": "GBPUSD=X",
-    "📈 Nasdaq Futures (NQ=F)": "NQ=F",
-    "🇺🇸 S&P 500 Futures (ES=F)": "ES=F",
-    "🛢️ Kőolaj Futures (CL=F)": "CL=F",
-    "₿ Bitcoin (BTC-USD)": "BTC-USD"
+    "🥇 Arany Spot (XAU/USD)": "XAU/USD",
+    "🥇 Arany Futures (GC)": "GC",
+    "📊 EUR/USD (Forex)": "EUR/USD",
+    "💷 GBP/USD (Forex)": "GBP/USD",
+    "🇺🇸 S&P 500 Index": "SPX",
+    "₿ Bitcoin (BTC/USD)": "BTC/USD"
 }
 
 styles = {
