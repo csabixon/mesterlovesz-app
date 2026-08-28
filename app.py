@@ -127,7 +127,7 @@ def analyze_chart(image_path, api_key, pair_name, style_name):
     }}
     """
     response = client.models.generate_content(
-        model='gemini-1.5-flash',
+        model='gemini-2.0-flash',
         contents=[image, prompt],
         config=types.GenerateContentConfig(response_mime_type="application/json"),
     )
