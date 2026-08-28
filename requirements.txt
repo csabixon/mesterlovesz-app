@@ -3,3 +3,4 @@ mplfinance
 pillow
 google-genai
 pandas
+requests
