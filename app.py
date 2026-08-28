@@ -22,6 +22,7 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 def get_finnhub_resolution(interval_name):
+    # Finnhub forex resolution map: 1, 5, 15, 30, 60, D
     mapping = {
         "1min": "1",
         "5min": "5",
@@ -34,16 +35,17 @@ def get_finnhub_chart(ticker, interval, api_key):
     import time
     resolution = get_finnhub_resolution(interval)
     
-    # 5 napra növeljük az időablakot, hogy biztosan legyen elég adat (hétvégén/ünnepnapokon is)
+    # Elegendő időablak biztosítása (2 nap az 1 perceshez)
     to_time = int(time.time())
-    from_time = to_time - (5 * 24 * 60 * 60)
+    from_time = to_time - (2 * 24 * 60 * 60)
     
-    url = f"https://finnhub.io/api/v1/stock/candle?symbol={ticker}&resolution={resolution}&from={from_time}&to={to_time}&token={api_key}"
+    # Helyes Finnhub Forex Candle Végpont (ahogy a dokumentációban is láttad)
+    url = f"https://finnhub.io/api/v1/forex/candle?symbol={ticker}&resolution={resolution}&from={from_time}&to={to_time}&token={api_key}"
     response = requests.get(url)
     data = response.json()
     
     if 's' not in data or data['s'] != 'ok':
-        raise ValueError(f"Finnhub Hiba: Nem érkezett adat a '{ticker}' szimbólumhoz. (Válasz: {data.get('s', 'ismeretlen')})")
+        raise ValueError(f"Finnhub Hiba: Nem érkezett adat a '{ticker}' szimbólumhoz. Ellenőrizd az API kulcsot!")
         
     df = pd.DataFrame({
         'datetime': pd.to_datetime(data['t'], unit='s'),
@@ -141,27 +143,24 @@ def calculate_position_size(balance, risk_pct, entry, sl, ticker):
         
         if "XAU" in ticker:
             return risk_usd, f"{(risk_usd / (price_delta * 100.0)):.2f} Lot", None
-        elif "USD" in ticker and "BTC" not in ticker:
+        elif "USD" in ticker:
             return risk_usd, f"{(risk_usd / price_delta / 100000.0):.2f} Lot", None
-        elif "BTC" in ticker:
-            return risk_usd, f"{(risk_usd / price_delta):.4f} BTC", None
         else:
             return risk_usd, f"{(risk_usd / (price_delta * 10)):.2f} Kontraktus", None
     except:
         return None, None, "Hiba"
 
 st.title("🎯 Mesterlövész Chart Analyzer (Finnhub Élő)")
-st.markdown("Valós idejű, gyors adatok Finnhub feed alapján.")
+st.markdown("Valós idejű, gyors 1 perces adatok Finnhub Forex feed alapján.")
 
 st.sidebar.header("⚙️ API Kulcsok")
 finnhub_api_input = st.sidebar.text_input("Finnhub API Kulcs (Adat)", type="password")
 gemini_api_input = st.sidebar.text_input("Gemini API Kulcs (AI)", value=os.environ.get("GEMINI_API_KEY", ""), type="password")
 
 assets = {
-    "🥇 Arany Spot (FX:XAUUSD)": "FX:XAU/USD",
-    "📊 EUR/USD (FX:EURUSD)": "FX:EUR/USD",
-    "💷 GBP/USD (FX:GBPUSD)": "FX:GBP/USD",
-    "₿ Bitcoin (BINANCE:BTCUSDT)": "BINANCE:BTC/USDT"
+    "🥇 Arany Spot (OANDA:XAU_USD)": "OANDA:XAU_USD",
+    "📊 EUR/USD (OANDA:EUR_USD)": "OANDA:EUR_USD",
+    "💷 GBP/USD (OANDA:GBP_USD)": "OANDA:GBP_USD"
 }
 
 styles = {
@@ -184,7 +183,7 @@ if st.sidebar.button("🚀 Elemzés Indítása", use_container_width=True):
         ticker = assets[selected_asset_name]
         interval = styles[selected_style_name]
         
-        with st.spinner(f"Finnhub adatok letöltése & AI Elemzés ({ticker})..."):
+        with st.spinner(f"Finnhub Forex adatok letöltése & AI Elemzés ({ticker})..."):
             try:
                 img_path = generate_chart_image(ticker, interval, finnhub_api_input)
                 data = analyze_chart(img_path, gemini_api_input, selected_asset_name, selected_style_name)
