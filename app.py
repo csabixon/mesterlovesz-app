@@ -8,7 +8,6 @@ import pandas as pd
 from google import genai
 from google.genai import types
 
-# Oldal konfiguráció mobilbarát elrendezéshez
 st.set_page_config(
     page_title="Mesterlövész Chart Analyzer",
     page_icon="🎯",
@@ -25,20 +24,23 @@ def calculate_rsi(series, period=14):
 def generate_chart_image(ticker, interval, period, filename="current_chart.png"):
     df = yf.download(ticker, interval=interval, period=period, progress=False)
     
+    # --- XAUUSD=X FALLBACK JAVÍTÁS ---
+    # Ha a spot arany nem ad adatot, automatikusan határidős (GC=F) aranyra váltunk
+    if df.empty and ticker == "XAUUSD=X":
+        ticker = "GC=F"
+        df = yf.download(ticker, interval=interval, period=period, progress=False)
+        
     if df.empty:
         raise ValueError(f"Nem sikerült adatot letölteni ehhez a tickerhez: {ticker}")
     
-    # --- YFINANCE HIBA JAVÍTÁSA ---
-    # Ha a Yahoo Finance dupla oszlopneveket ad vissza (MultiIndex), lelaposítjuk
+    # --- YFINANCE TÁBLÁZAT JAVÍTÁS ---
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
         
-    # Kikényszerítjük, hogy az oszlopok biztosan tiszta számok (float) legyenek
     for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
             
-    # Eltávolítjuk az esetleges hibás/üres sorokat
     df = df.dropna(subset=['Open', 'Close'])
     # ------------------------------
 
@@ -110,7 +112,7 @@ def analyze_chart(image_path, api_key, pair_name, style_name):
     """
 
     response = client.models.generate_content(
-        model='gemini-3.6-flash',
+        model='gemini-2.5-flash',
         contents=[image, prompt],
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -149,12 +151,9 @@ def calculate_position_size(balance, risk_pct, entry, sl, ticker):
     if price_delta <= 0:
         return None, None, "Entry és SL megegyezik."
 
-    if ticker == "GC=F":
-        contracts = risk_usd / (price_delta * 100.0)
-        lot_str = f"{contracts:.2f} Kontraktus (Futures)"
-    elif ticker == "XAUUSD=X":
+    if ticker == "GC=F" or ticker == "XAUUSD=X":
         lots = risk_usd / (price_delta * 100.0)
-        lot_str = f"{lots:.2f} Lot (XAU/USD)"
+        lot_str = f"{lots:.2f} Lot (Arany)"
     elif "=X" in ticker:
         units = risk_usd / price_delta
         standard_lots = units / 100000.0
@@ -173,7 +172,6 @@ def calculate_position_size(balance, risk_pct, entry, sl, ticker):
 st.title("🎯 Mesterlövész Chart Analyzer")
 st.markdown("SMC + Price Action + Fibonacci OTE + RSI Divergencia AI-alapú elemzés.")
 
-# Oldalsáv (Sidebar) a beállításoknak
 st.sidebar.header("⚙️ Beállítások")
 
 api_key_input = st.sidebar.text_input(
@@ -215,10 +213,7 @@ if analyze_btn:
         
         with st.spinner(f"Adatok letöltése & Elemzés folyamatban ({selected_asset_name})..."):
             try:
-                # 1. Chart generálás
                 img_path = generate_chart_image(ticker, timeframe_data["interval"], timeframe_data["period"])
-                
-                # 2. AI Elemzés
                 data = analyze_chart(img_path, api_key_input, selected_asset_name, selected_style_name)
                 
                 dir_val = data.get('direction', 'NEUTRAL')
@@ -227,11 +222,9 @@ if analyze_btn:
                 sl = data.get('sl')
                 tp = data.get('tp')
                 
-                # Eredmények megjelenítése
                 st.markdown("---")
                 st.subheader("📊 Elemzési Eredmények")
                 
-                # Irány kiemelése
                 if dir_val == "BUY":
                     st.success(irany_text := f"Irány: {dir_val} 🟢")
                 elif dir_val == "SELL":
@@ -239,16 +232,13 @@ if analyze_btn:
                 else:
                     st.warning(irany_text := f"Irány: {dir_val} 🟠 (Nincs elég confluence)")
                 
-                # Megtalált confluences
                 st.markdown(f"**Megtalált Confluence-ek:** {', '.join(confluences) if confluences else 'Nincs'}")
                 
-                # Szintek oszlopokban
                 col1, col2, col3 = st.columns(3)
                 col1.metric("Belépő (Entry)", str(entry) if entry else "-")
                 col2.metric("Stop Loss (SL)", str(sl) if sl else "-")
                 col3.metric("Take Profit (TP)", str(tp) if tp else "-")
                 
-                # R:R és Pozíció méret
                 if dir_val != "NEUTRAL" and entry and sl and tp:
                     rr, error = calculate_risk_reward(dir_val, entry, sl, tp)
                     if rr is not None:
@@ -264,11 +254,9 @@ if analyze_btn:
                         col_a.metric("Kockáztatott Összeg", f"${risk_usd:.2f} USD")
                         col_b.metric("Javasolt Méret", str(lot_size))
                 
-                # Indoklás
                 st.markdown("### 📝 Részletes Indoklás")
                 st.write(data.get('reasoning', 'Nincs magyarázat.'))
                 
-                # Generált chart képek megjelenítése
                 st.markdown("### 📈 Vizsgált Chart & RSI")
                 st.image(img_path, caption=f"{selected_asset_name} - {selected_style_name}")
                 
