@@ -1,15 +1,15 @@
 import json
 import os
-import requests
 import streamlit as st
 from PIL import Image
 import mplfinance as mpf
+import yfinance as yf
 import pandas as pd
 from google import genai
 from google.genai import types
 
 st.set_page_config(
-    page_title="Mesterlövész Chart Analyzer (Finnhub Élő)",
+    page_title="Mesterlövész Chart Analyzer",
     page_icon="🎯",
     layout="centered"
 )
@@ -21,50 +21,39 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-def get_finnhub_resolution(interval_name):
-    # Finnhub forex resolution map: 1, 5, 15, 30, 60, D
-    mapping = {
-        "1min": "1",
-        "5min": "5",
-        "15min": "15",
-        "1day": "D"
-    }
-    return mapping.get(interval_name, "1")
-
-def get_finnhub_chart(ticker, interval, api_key):
-    import time
-    resolution = get_finnhub_resolution(interval)
-    
-    # Elegendő időablak biztosítása (2 nap az 1 perceshez)
-    to_time = int(time.time())
-    from_time = to_time - (2 * 24 * 60 * 60)
-    
-    # Helyes Finnhub Forex Candle Végpont (ahogy a dokumentációban is láttad)
-    url = f"https://finnhub.io/api/v1/forex/candle?symbol={ticker}&resolution={resolution}&from={from_time}&to={to_time}&token={api_key}"
-    response = requests.get(url)
-    data = response.json()
-    
-    if 's' not in data or data['s'] != 'ok':
-        raise ValueError(f"Finnhub Hiba: Nem érkezett adat a '{ticker}' szimbólumhoz. Ellenőrizd az API kulcsot!")
+def get_chart_data(ticker, interval):
+    if interval == "1m":
+        period = "1d"
+    elif interval == "5m":
+        period = "5d"
+    elif interval == "15m":
+        period = "5d"
+    else:
+        period = "1mo"
         
-    df = pd.DataFrame({
-        'datetime': pd.to_datetime(data['t'], unit='s'),
-        'Open': data['o'],
-        'High': data['h'],
-        'Low': data['l'],
-        'Close': data['c'],
-        'Volume': data['v']
-    })
+    df = yf.download(ticker, interval=interval, period=period, progress=False)
     
-    df.set_index('datetime', inplace=True)
-    df.sort_index(inplace=True)
+    if df.empty:
+        raise ValueError(f"Nem érkezett adat a {ticker} instrumentumhoz ezen az idősíkon.")
+        
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+        
+    required_cols = ['Open', 'High', 'Low', 'Close']
+    for col in required_cols:
+        if col not in df.columns:
+            lower_col = col.lower()
+            if lower_col in df.columns:
+                df.rename(columns={lower_col: col}, inplace=True)
+                
+    df.dropna(subset=['Close'], inplace=True)
     return df
 
-def generate_chart_image(ticker, interval, api_key, filename="current_chart.png"):
-    df = get_finnhub_chart(ticker, interval, api_key)
+def generate_chart_image(ticker, interval, filename="current_chart.png"):
+    df = get_chart_data(ticker, interval)
     
-    if len(df) < 10:
-        raise ValueError("Túl kevés gyertya érkezett az elemzéshez ezen az idősíkon.")
+    if len(df) < 15:
+        raise ValueError("Túl kevés gyertya érkezett az elemzéshez.")
         
     df['RSI'] = calculate_rsi(df['Close'])
     
@@ -141,33 +130,36 @@ def calculate_position_size(balance, risk_pct, entry, sl, ticker):
         price_delta = abs(float(entry) - float(sl))
         if price_delta <= 0: return None, None, "Hiba"
         
-        if "XAU" in ticker:
+        if "XAU" in ticker or "GC" in ticker:
             return risk_usd, f"{(risk_usd / (price_delta * 100.0)):.2f} Lot", None
-        elif "USD" in ticker:
+        elif "USD" in ticker and "BTC" not in ticker:
             return risk_usd, f"{(risk_usd / price_delta / 100000.0):.2f} Lot", None
+        elif "BTC" in ticker:
+            return risk_usd, f"{(risk_usd / price_delta):.4f} BTC", None
         else:
             return risk_usd, f"{(risk_usd / (price_delta * 10)):.2f} Kontraktus", None
     except:
         return None, None, "Hiba"
 
-st.title("🎯 Mesterlövész Chart Analyzer (Finnhub Élő)")
-st.markdown("Valós idejű, gyors 1 perces adatok Finnhub Forex feed alapján.")
+st.title("🎯 Mesterlövész Chart Analyzer")
+st.markdown("Telefonról is azonnal futó, stabil AI elemző rendszer.")
 
-st.sidebar.header("⚙️ API Kulcsok")
-finnhub_api_input = st.sidebar.text_input("Finnhub API Kulcs (Adat)", type="password")
+st.sidebar.header("⚙️ Konfiguráció")
 gemini_api_input = st.sidebar.text_input("Gemini API Kulcs (AI)", value=os.environ.get("GEMINI_API_KEY", ""), type="password")
 
 assets = {
-    "🥇 Arany Spot (OANDA:XAU_USD)": "OANDA:XAU_USD",
-    "📊 EUR/USD (OANDA:EUR_USD)": "OANDA:EUR_USD",
-    "💷 GBP/USD (OANDA:GBP_USD)": "OANDA:GBP_USD"
+    "🥇 Arany Spot (XAUUSD=X)": "XAUUSD=X",
+    "🥇 Arany Futures (GC=F)": "GC=F",
+    "📊 EUR/USD (EURUSD=X)": "EURUSD=X",
+    "💷 GBP/USD (GBPUSD=X)": "GBPUSD=X",
+    "₿ Bitcoin (BTC-USD)": "BTC-USD"
 }
 
 styles = {
-    "🚀 Mikro-Skalp (1 perces)": "1min",
-    "⚡ Skalp (5 perces)": "5min",
-    "⚡ Skalp (15 perces)": "15min",
-    "🌊 Swing (Napi)": "1day"
+    "🚀 Mikro-Skalp (1 perces)": "1m",
+    "⚡ Skalp (5 perces)": "5m",
+    "⚡ Skalp (15 perces)": "15m",
+    "🌊 Swing (Napi)": "1d"
 }
 
 st.sidebar.header("📊 Kereskedés")
@@ -177,15 +169,15 @@ balance_input = st.sidebar.text_input("Számla Tőke ($)", value="10000")
 risk_input = st.sidebar.text_input("Kockázat (%)", value="1.0")
 
 if st.sidebar.button("🚀 Elemzés Indítása", use_container_width=True):
-    if not finnhub_api_input or not gemini_api_input:
-        st.error("Kérlek add meg mindkét API kulcsot az oldalsávban!")
+    if not gemini_api_input:
+        st.error("Kérlek add meg a Gemini API kulcsot az oldalsávban!")
     else:
         ticker = assets[selected_asset_name]
         interval = styles[selected_style_name]
         
-        with st.spinner(f"Finnhub Forex adatok letöltése & AI Elemzés ({ticker})..."):
+        with st.spinner(f"Adatok betöltése & AI Elemzés ({ticker})..."):
             try:
-                img_path = generate_chart_image(ticker, interval, finnhub_api_input)
+                img_path = generate_chart_image(ticker, interval)
                 data = analyze_chart(img_path, gemini_api_input, selected_asset_name, selected_style_name)
                 
                 dir_val, entry, sl, tp = data.get('direction', 'NEUTRAL'), data.get('entry'), data.get('sl'), data.get('tp')
