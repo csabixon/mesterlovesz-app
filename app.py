@@ -192,6 +192,8 @@ assets = {
 }
 
 styles = {
+    "🚀 Mikro-Skalp (1 perces chart)": {"interval": "1m", "period": "1d"},
+    "⚡ Skalp (5 perces chart)": {"interval": "5m", "period": "5d"},
     "⚡ Skalp (15 perces chart)": {"interval": "15m", "period": "5d"},
     "🌊 Swing (Napi chart)": {"interval": "1d", "period": "6mo"}
 }
