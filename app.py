@@ -1,15 +1,15 @@
 import json
 import os
+import requests
 import streamlit as st
 from PIL import Image
 import mplfinance as mpf
-import yfinance as yf
 import pandas as pd
 from google import genai
 from google.genai import types
 
 st.set_page_config(
-    page_title="Mesterlövész Chart Analyzer",
+    page_title="Mesterlövész Chart Analyzer (Élő)",
     page_icon="🎯",
     layout="centered"
 )
@@ -21,59 +21,41 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-def get_chart_data(ticker, interval):
-    # Próbáljuk meg a kért idősíkkal
-    if interval == "1m":
-        periods = ["1d", "5d"]
-    elif interval == "5m":
-        periods = ["5d", "7d"]
-    else:
-        periods = ["1mo", "3mo"]
+def get_binance_chart(symbol, interval):
+    # Binance API idősík mapping
+    interval_map = {
+        "1min": "1m",
+        "5min": "5m",
+        "15min": "15m",
+        "1day": "1d"
+    }
+    binance_interval = interval_map.get(interval, "1m")
+    
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={binance_interval}&limit=100"
+    response = requests.get(url)
+    data = response.json()
+    
+    if not isinstance(data, list) or len(data) == 0:
+        raise ValueError(f"Nem érkezett adat a {symbol} szimbólumhoz a Binance-ról.")
         
-    df = pd.DataFrame()
-    for p in periods:
-        try:
-            temp_df = yf.download(ticker, interval=interval, period=p, progress=False)
-            if not temp_df.empty:
-                df = temp_df
-                break
-        except:
-            continue
-            
-    # Ha az 1m / 5m nem ad adatot (pl. zárva tartás vagy korlátozás miatt), próbáljuk meg GC=F-fel vagy napi idősíkkal biztonságképpen
-    if df.empty and ticker == "XAUUSD=X":
-        try:
-            df = yf.download("GC=F", interval=interval, period="5d", progress=False)
-        except:
-            pass
-
-    if df.empty:
-        # Végső fallback: ha semmi sem jön percesen, kérjünk le napi adatot, hogy ne haljon el a app
-        try:
-            df = yf.download(ticker, interval="1d", period="1mo", progress=False)
-        except:
-            pass
-
-    if df.empty:
-        raise ValueError(f"A piac jelenleg zárva van vagy nincs elegendő adat a(z) {ticker} szimbólumhoz ezen az idősíkon. Próbálj 15 perces vagy Napi idősíkot!")
+    df = pd.DataFrame(data, columns=[
+        'Open_time', 'Open', 'High', 'Low', 'Close', 'Volume',
+        'Close_time', 'Quote_asset_volume', 'Number_of_trades',
+        'Taker_buy_base_asset_volume', 'Taker_buy_quote_asset_volume', 'Ignore'
+    ])
+    
+    # Adatok konvertálása számmá
+    for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+        df[col] = pd.to_numeric(df[col])
         
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-        
-    required_cols = ['Open', 'High', 'Low', 'Close']
-    for col in required_cols:
-        if col not in df.columns:
-            lower_col = col.lower()
-            if lower_col in df.columns:
-                df.rename(columns={lower_col: col}, inplace=True)
-                
-    df.dropna(subset=['Close'], inplace=True)
-    return df
+    df['datetime'] = pd.to_datetime(df['Open_time'], unit='ms')
+    df.set_index('datetime', inplace=True)
+    return df[['Open', 'High', 'Low', 'Close', 'Volume']]
 
 def generate_chart_image(ticker, interval, filename="current_chart.png"):
-    df = get_chart_data(ticker, interval)
+    df = get_binance_chart(ticker, interval)
     
-    if len(df) < 10:
+    if len(df) < 15:
         raise ValueError("Túl kevés gyertya érkezett az elemzéshez.")
         
     df['RSI'] = calculate_rsi(df['Close'])
@@ -151,10 +133,8 @@ def calculate_position_size(balance, risk_pct, entry, sl, ticker):
         price_delta = abs(float(entry) - float(sl))
         if price_delta <= 0: return None, None, "Hiba"
         
-        if "XAU" in ticker or "GC" in ticker:
+        if "PAXG" in ticker:
             return risk_usd, f"{(risk_usd / (price_delta * 100.0)):.2f} Lot", None
-        elif "USD" in ticker and "BTC" not in ticker:
-            return risk_usd, f"{(risk_usd / price_delta / 100000.0):.2f} Lot", None
         elif "BTC" in ticker:
             return risk_usd, f"{(risk_usd / price_delta):.4f} BTC", None
         else:
@@ -162,25 +142,23 @@ def calculate_position_size(balance, risk_pct, entry, sl, ticker):
     except:
         return None, None, "Hiba"
 
-st.title("🎯 Mesterlövész Chart Analyzer")
-st.markdown("Telefonról is azonnal futó, stabil AI elemző rendszer.")
+st.title("🎯 Mesterlövész Chart Analyzer (Élő)")
+st.markdown("Valós idejű, másodpercre pontos perces adatok.")
 
 st.sidebar.header("⚙️ Konfiguráció")
 gemini_api_input = st.sidebar.text_input("Gemini API Kulcs (AI)", value=os.environ.get("GEMINI_API_KEY", ""), type="password")
 
 assets = {
-    "🥇 Arany Spot (XAUUSD=X)": "XAUUSD=X",
-    "🥇 Arany Futures (GC=F)": "GC=F",
-    "📊 EUR/USD (EURUSD=X)": "EURUSD=X",
-    "💷 GBP/USD (GBPUSD=X)": "GBPUSD=X",
-    "₿ Bitcoin (BTC-USD)": "BTC-USD"
+    "🥇 Arany Spot (PAXG / USD)": "PAXGUSDT",
+    "₿ Bitcoin (BTC / USDT)": "BTCUSDT",
+    "イー Ethereum (ETH / USDT)": "ETHUSDT"
 }
 
 styles = {
-    "🚀 Mikro-Skalp (1 perces)": "1m",
-    "⚡ Skalp (5 perces)": "5m",
-    "⚡ Skalp (15 perces)": "15m",
-    "🌊 Swing (Napi)": "1d"
+    "🚀 Mikro-Skalp (1 perces)": "1min",
+    "⚡ Skalp (5 perces)": "5min",
+    "⚡ Skalp (15 perces)": "15min",
+    "🌊 Swing (Napi)": "1day"
 }
 
 st.sidebar.header("📊 Kereskedés")
@@ -196,7 +174,7 @@ if st.sidebar.button("🚀 Elemzés Indítása", use_container_width=True):
         ticker = assets[selected_asset_name]
         interval = styles[selected_style_name]
         
-        with st.spinner(f"Adatok betöltése & AI Elemzés ({ticker})..."):
+        with st.spinner(f"Valós idejű adatok betöltése & AI Elemzés ({ticker})..."):
             try:
                 img_path = generate_chart_image(ticker, interval)
                 data = analyze_chart(img_path, gemini_api_input, selected_asset_name, selected_style_name)
