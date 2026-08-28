@@ -22,19 +22,40 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 def get_chart_data(ticker, interval):
+    # Próbáljuk meg a kért idősíkkal
     if interval == "1m":
-        period = "1d"
+        periods = ["1d", "5d"]
     elif interval == "5m":
-        period = "5d"
-    elif interval == "15m":
-        period = "5d"
+        periods = ["5d", "7d"]
     else:
-        period = "1mo"
+        periods = ["1mo", "3mo"]
         
-    df = yf.download(ticker, interval=interval, period=period, progress=False)
-    
+    df = pd.DataFrame()
+    for p in periods:
+        try:
+            temp_df = yf.download(ticker, interval=interval, period=p, progress=False)
+            if not temp_df.empty:
+                df = temp_df
+                break
+        except:
+            continue
+            
+    # Ha az 1m / 5m nem ad adatot (pl. zárva tartás vagy korlátozás miatt), próbáljuk meg GC=F-fel vagy napi idősíkkal biztonságképpen
+    if df.empty and ticker == "XAUUSD=X":
+        try:
+            df = yf.download("GC=F", interval=interval, period="5d", progress=False)
+        except:
+            pass
+
     if df.empty:
-        raise ValueError(f"Nem érkezett adat a {ticker} instrumentumhoz ezen az idősíkon.")
+        # Végső fallback: ha semmi sem jön percesen, kérjünk le napi adatot, hogy ne haljon el a app
+        try:
+            df = yf.download(ticker, interval="1d", period="1mo", progress=False)
+        except:
+            pass
+
+    if df.empty:
+        raise ValueError(f"A piac jelenleg zárva van vagy nincs elegendő adat a(z) {ticker} szimbólumhoz ezen az idősíkon. Próbálj 15 perces vagy Napi idősíkot!")
         
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
@@ -52,7 +73,7 @@ def get_chart_data(ticker, interval):
 def generate_chart_image(ticker, interval, filename="current_chart.png"):
     df = get_chart_data(ticker, interval)
     
-    if len(df) < 15:
+    if len(df) < 10:
         raise ValueError("Túl kevés gyertya érkezett az elemzéshez.")
         
     df['RSI'] = calculate_rsi(df['Close'])
