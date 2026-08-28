@@ -4,6 +4,7 @@ import streamlit as st
 from PIL import Image
 import yfinance as yf
 import mplfinance as mpf
+import pandas as pd
 from google import genai
 from google.genai import types
 
@@ -27,6 +28,23 @@ def generate_chart_image(ticker, interval, period, filename="current_chart.png")
     if df.empty:
         raise ValueError(f"Nem sikerült adatot letölteni ehhez a tickerhez: {ticker}")
     
+    # --- YFINANCE HIBA JAVÍTÁSA ---
+    # Ha a Yahoo Finance dupla oszlopneveket ad vissza (MultiIndex), lelaposítjuk
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+        
+    # Kikényszerítjük, hogy az oszlopok biztosan tiszta számok (float) legyenek
+    for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+    # Eltávolítjuk az esetleges hibás/üres sorokat
+    df = df.dropna(subset=['Open', 'Close'])
+    # ------------------------------
+
+    if df.empty:
+        raise ValueError(f"Az adatok tisztítása után nem maradt érvényes adat: {ticker}")
+
     df = df.tail(80)
     df['RSI'] = calculate_rsi(df['Close'])
     
@@ -255,4 +273,4 @@ if analyze_btn:
                 st.image(img_path, caption=f"{selected_asset_name} - {selected_style_name}")
                 
             except Exception as e:
-                st.error(f"Hiba történt a folyamat során:\n{e}")
+                st.error(f"Hiba történt a folyamat során: {e}")
