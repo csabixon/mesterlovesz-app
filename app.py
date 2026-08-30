@@ -5,8 +5,10 @@ from PIL import Image
 import mplfinance as mpf
 import pandas as pd
 import requests
+import yfinance as yf
 from google import genai
 from google.genai import types
+from datetime import datetime
 
 st.set_page_config(
     page_title="Mesterlövész Chart Analyzer",
@@ -14,207 +16,392 @@ st.set_page_config(
     layout="centered"
 )
 
-def calculate_rsi(series, period=14):
+# ----------------------------------------------------------------------
+# Segédfüggvények
+# ----------------------------------------------------------------------
+
+def calculate_rsi(series: pd.Series, period: int = 14) -> pd.Series:
     delta = series.diff()
     gain = (delta.where(delta > 0, 0)).ewm(alpha=1/period, adjust=False).mean()
     loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/period, adjust=False).mean()
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-def get_twelvedata_data(symbol, interval, twelvedata_api_key):
+
+def get_twelvedata_data(symbol: str, interval: str, api_key: str, outputsize: int = 400) -> pd.DataFrame:
     twelve_intervals = {
         "1m": "1min",
         "5m": "5min",
         "15m": "15min",
+        "1h": "1h",
+        "4h": "4h",
         "1d": "1day"
     }
-    
+
     iv = twelve_intervals.get(interval, "5min")
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={iv}&outputsize=80&apikey={twelvedata_api_key}"
-    
-    response = requests.get(url)
+    url = (
+        f"https://api.twelvedata.com/time_series"
+        f"?symbol={symbol}&interval={iv}&outputsize={outputsize}&apikey={api_key}"
+    )
+
+    response = requests.get(url, timeout=20)
     data = response.json()
-    
+
     if "values" not in data:
-        raise ValueError(f"Hiba a Twelve Data letöltés során: {data.get('message', 'Ismeretlen hiba (ellenőrizd a Twelve Data kulcsot!)')}")
-        
+        msg = data.get("message") or data.get("status") or str(data)
+        raise ValueError(f"Twelve Data hiba: {msg}")
+
     df = pd.DataFrame(data["values"])
-    df['datetime'] = pd.to_datetime(df['datetime'])
-    df.set_index('datetime', inplace=True)
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    df.set_index("datetime", inplace=True)
     df = df.sort_index()
-    
-    for col in ['open', 'high', 'low', 'close']:
-        df[col] = df[col].astype(float)
-        
+
+    for col in ["open", "high", "low", "close"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
     df.rename(columns={
-        'open': 'Open',
-        'high': 'High',
-        'low': 'Low',
-        'close': 'Close'
+        "open": "Open",
+        "high": "High",
+        "low": "Low",
+        "close": "Close"
     }, inplace=True)
-    
-    df.dropna(subset=['Close'], inplace=True)
+
+    df.dropna(subset=["Close"], inplace=True)
+
+    if len(df) < 40:
+        raise ValueError(f"Túl kevés gyertya Twelve Data-ból ({len(df)} db)")
+
     return df
 
-def generate_chart_image(ticker, interval, twelvedata_api_key, filename="current_chart.png"):
-    df = get_twelvedata_data(ticker, interval, twelvedata_api_key)
-    
-    if len(df) < 10:
-        raise ValueError("Túl kevés gyertya érkezett az elemzéshez.")
-        
-    df['RSI'] = calculate_rsi(df['Close'])
-    
-    mc = mpf.make_marketcolors(up='green', down='red', edge='inherit', wick='inherit', volume='in')
-    s = mpf.make_mpf_style(marketcolors=mc, gridstyle=':', y_on_right=True)
-    
-    ap = [
-        mpf.make_addplot(df['RSI'], panel=1, ylabel='RSI (14)', color='purple', width=1.2)
-    ]
-    
-    mpf.plot(
-        df, 
-        type='candle', 
-        style=s, 
-        addplot=ap,
-        panel_ratios=(3, 1),
-        savefig=filename, 
-        tight_layout=True, 
-        figsize=(10, 7)
-    )
-    return filename
 
-def analyze_chart(image_path, gemini_api_key, pair_name, style_name):
+def get_yfinance_data(symbol: str = "GC=F", interval: str = "5m") -> pd.DataFrame:
+    yf_intervals = {
+        "1m": "1m",
+        "5m": "5m",
+        "15m": "15m",
+        "1h": "60m",
+        "4h": "60m",
+        "1d": "1d"
+    }
+    yf_interval = yf_intervals.get(interval, "5m")
+
+    period_map = {
+        "1m": "7d",
+        "5m": "60d",
+        "15m": "60d",
+        "1h": "730d",
+        "4h": "730d",
+        "1d": "2y"
+    }
+    period = period_map.get(interval, "60d")
+
+    ticker = yf.Ticker(symbol)
+    df = ticker.history(period=period, interval=yf_interval, auto_adjust=True)
+
+    if df.empty:
+        raise ValueError("yfinance nem adott vissza adatot")
+
+    df = df[["Open", "High", "Low", "Close"]].copy()
+    df.dropna(inplace=True)
+
+    if df.index.tz is not None:
+        df.index = df.index.tz_localize(None)
+
+    if len(df) < 40:
+        raise ValueError(f"Túl kevés gyertya yfinance-ból ({len(df)} db)")
+
+    return df
+
+
+def get_data_with_fallback(ticker: str, interval: str, twelvedata_key: str) -> tuple[pd.DataFrame, str]:
+    if ticker.upper() in ["GC", "GC=F"]:
+        try:
+            df = get_twelvedata_data("GC", interval, twelvedata_key, outputsize=400)
+            return df, "Twelve Data (GC)"
+        except Exception:
+            df = get_yfinance_data("GC=F", interval)
+            return df, "yfinance (GC=F) – fallback"
+    else:
+        df = get_twelvedata_data(ticker, interval, twelvedata_key, outputsize=400)
+        return df, f"Twelve Data ({ticker})"
+
+
+def generate_chart_image(
+    ticker: str,
+    interval: str,
+    api_key: str,
+    filename: str = "current_chart.png"
+) -> tuple[str, pd.DataFrame, str]:
+    df, source = get_data_with_fallback(ticker, interval, api_key)
+    df["RSI"] = calculate_rsi(df["Close"])
+
+    plot_df = df.tail(180).copy()
+
+    mc = mpf.make_marketcolors(
+        up="#26a69a",
+        down="#ef5350",
+        edge="inherit",
+        wick="inherit",
+        volume="in"
+    )
+    style = mpf.make_mpf_style(
+        marketcolors=mc,
+        gridstyle=":",
+        y_on_right=True,
+        facecolor="#0e1117",
+        edgecolor="#333333",
+        figcolor="#0e1117",
+        rc={"axes.labelcolor": "white", "xtick.color": "white", "ytick.color": "white"}
+    )
+
+    apds = [
+        mpf.make_addplot(
+            plot_df["RSI"],
+            panel=1,
+            ylabel="RSI (14)",
+            color="#ab47bc",
+            width=1.4
+        )
+    ]
+
+    mpf.plot(
+        plot_df,
+        type="candle",
+        style=style,
+        addplot=apds,
+        panel_ratios=(4, 1),
+        savefig=dict(fname=filename, dpi=160, bbox_inches="tight"),
+        tight_layout=True,
+        figsize=(12, 8),
+        volume=False,
+        warn_too_much_data=1000
+    )
+
+    return filename, df, source
+
+
+def analyze_chart(
+    image_path: str,
+    gemini_api_key: str,
+    pair_name: str,
+    style_name: str,
+    last_close: float
+) -> dict:
     client = genai.Client(api_key=gemini_api_key)
     image = Image.open(image_path)
-    
+
     prompt = f"""
-    Ez egy {pair_name} instrumentum chartja, {style_name} idősíkon. 
-    A felső panelen a gyertyadiagram, az alsó panelen az RSI (14) indikátor látható.
+Te egy extrém fegyelmezett, profi SMC / ICT "Mesterlövész" (Sniper) kereskedő vagy.
+Kizárólag magas valószínűségű setupokra adsz jelet. A tőke védelme az elsődleges szempont.
 
-    Kereskedési feladatod: Eljárni mint egy MESTERLÖVÉSZ (Sniper) kereskedő.
-    KIZÁRÓLAG akkor adj BUY vagy SELL jelet, ha legalább 3 AZ ALÁBBI 4 CONFLUENCE (egybeesés) KÖZÜL TELJESÜL:
+Instrumentum: {pair_name}
+Idősík: {style_name}
+Utolsó ismert záróár: {last_close}
 
-    1. **SMC / ICT Struktúra:** Liquidity Sweep megtörtént? Szerkezeti törés (ChoCh/BoS) látható? Van FVG vagy OB?
-    2. **Price Action:** Erős elutasító gyertya a kulcsszintnél?
-    3. **Fibonacci OTE:** Az ár a 61.8% - 79% prémium/diszkont zónába érkezett?
-    4. **RSI Megerősítés:** Látható RSI Divergencia vagy extrém túladott/túlvett zónából fordulás?
+A képen a gyertyadiagram (felső panel) és az RSI(14) (alsó panel) látható.
 
-    Válaszolj KIZÁRÓLAG egy érvényes JSON objektumban. Számok (entry, sl, tp) tiszta float értékek legyenek!
+==================================================
+ALAP CONFLUENCE SZABÁLYOK (legalább 3 a 4-ből kötelező):
+==================================================
+1. **SMC / ICT Struktúra**: Liquidity Sweep megtörtént + ChoCh vagy BoS látható + érvényes Fair Value Gap (FVG) vagy Order Block
+2. **Price Action**: Erős, egyértelmű elutasító gyertya (Pin Bar, Bullish/Bearish Engulfing, vagy nagyon hosszú kanóc) pontosan a kulcsszinten / zónán belül
+3. **Fibonacci OTE**: Az ár a 61.8% – 79% prémium/diszkont zónában van
+4. **RSI megerősítés**: Látható RSI divergencia VAGY extrém túladott (<30) / túlvett (>70) zónából történő fordulás
 
-    JSON struktúra:
-    {{
-      "direction": "BUY" vagy "SELL" vagy "NEUTRAL",
-      "entry": 2650.50,
-      "sl": 2640.00,
-      "tp": 2680.00,
-      "confluences_found": ["SMC Sweep", "RSI Divergence"],
-      "reasoning": "Részletes indoklás..."
-    }}
-    """
+==================================================
+SKALP SPECIÁLIS EXTRA SZABÁLYOK (1m és 5m idősíkon kötelezően figyeld):
+==================================================
+- A Liquidity Sweep maximum az utolsó 6–8 gyertyán belül történt meg (friss sweep kell)
+- Az elutasító gyertyának erősnek és egyértelműnek kell lennie (nem gyenge, kis testű gyertya)
+- Kerüld az oldalazó, alacsony momentumú időszakokat (az utolsó 3–5 gyertyának legyen tiszta irányú momentuma)
+- Csak akkor adj BUY vagy SELL jelet, ha a várható Risk:Reward arány legalább 1:1.8
+- Ha a fenti skalp extra feltételek közül több is hiányzik → kötelezően NEUTRAL
+
+==================================================
+ÁLTALÁNOS SZIGORÚ SZABÁLYOK:
+==================================================
+- Ha a 4 alap confluence-ből kevesebb mint 3 teljesül → NEUTRAL
+- Ha bármilyen kétséged van a setup minőségével kapcsolatban → NEUTRAL
+- Soha ne erőltesd a jelet. A "nincs trade" is érvényes és okos döntés.
+- Az entry, stop loss és take profit szinteknek logikusnak és a struktúrához igazodónak kell lenniük.
+
+Válaszolj KIZÁRÓLAG érvényes JSON formátumban. Semmilyen más szöveget ne írj a JSON-on kívül!
+
+{{
+  "direction": "BUY" | "SELL" | "NEUTRAL",
+  "entry": float vagy null,
+  "sl": float vagy null,
+  "tp": float vagy null,
+  "confluences_found": ["lista a talált erős confluences-ekről"],
+  "missing": ["lista a hiányzó vagy gyenge feltételekről"],
+  "reasoning": "Rövid, szakmai, magyar nyelvű indoklás. Magyarázd el miért adsz jelet vagy miért NEUTRAL."
+}}
+"""
+
     response = client.models.generate_content(
-        model='gemini-3.6-flash',
+        model="gemini-3.6-flash",
         contents=[image, prompt],
-        config=types.GenerateContentConfig(response_mime_type="application/json"),
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.12
+        ),
     )
     return json.loads(response.text)
 
-def calculate_risk_reward(direction, entry, sl, tp):
+
+def calculate_risk_reward(direction: str, entry, sl, tp):
     try:
         entry, sl, tp = float(entry), float(sl), float(tp)
         if direction == "BUY":
-            risk, reward = entry - sl, tp - entry
+            risk = entry - sl
+            reward = tp - entry
         elif direction == "SELL":
-            risk, reward = sl - entry, entry - tp
+            risk = sl - entry
+            reward = entry - tp
         else:
-            return None, "NEUTRAL"
-        return reward / risk if risk > 0 else None, None
-    except:
-        return None, "Hiba"
+            return None
+        return round(reward / risk, 2) if risk > 0 else None
+    except Exception:
+        return None
 
-def calculate_position_size(balance, risk_pct, entry, sl, ticker):
+
+def calculate_position_size(balance, risk_pct, entry, sl, ticker: str):
     try:
         risk_usd = float(balance) * (float(risk_pct) / 100.0)
         price_delta = abs(float(entry) - float(sl))
-        if price_delta <= 0: return None, None, "Hiba"
-        
-        if "XAU" in ticker:
-            return risk_usd, f"{(risk_usd / (price_delta * 100.0)):.2f} Lot", None
-        elif "EUR" in ticker or "GBP" in ticker:
-            return risk_usd, f"{(risk_usd / price_delta / 100000.0):.2f} Lot", None
-        elif "BTC" in ticker:
-            return risk_usd, f"{(risk_usd / price_delta):.4f} BTC", None
+        if price_delta <= 0:
+            return None, None
+
+        if "XAU" in ticker.upper() or "GC" in ticker.upper():
+            lots = risk_usd / (price_delta * 100)
+            return risk_usd, f"{lots:.2f} Lot"
+        elif "BTC" in ticker.upper():
+            return risk_usd, f"{(risk_usd / price_delta):.4f} BTC"
         else:
-            return risk_usd, f"{(risk_usd / (price_delta * 10)):.2f} Kontraktus", None
-    except:
-        return None, None, "Hiba"
+            lots = risk_usd / (price_delta * 100000)
+            return risk_usd, f"{lots:.2f} Lot"
+    except Exception:
+        return None, None
+
+
+# ----------------------------------------------------------------------
+# Streamlit UI
+# ----------------------------------------------------------------------
 
 st.title("🎯 Mesterlövész Chart Analyzer")
-st.markdown("Valós idejű XAU/USD skalp elemző rendszer.")
+st.caption("SMC + Price Action + Fibonacci OTE + RSI | Szigorú confluence + skalp optimalizálás")
 
 st.sidebar.header("⚙️ Konfiguráció")
-twelvedata_api_input = st.sidebar.text_input("Twelve Data API Kulcs", value="demo", type="password")
-gemini_api_input = st.sidebar.text_input("Gemini API Kulcs (AI)", value=os.environ.get("GEMINI_API_KEY", ""), type="password")
+
+twelvedata_api_input = st.sidebar.text_input(
+    "Twelve Data API Kulcs",
+    value=os.environ.get("TWELVEDATA_API_KEY", ""),
+    type="password"
+)
+
+gemini_api_input = st.sidebar.text_input(
+    "Gemini API Kulcs",
+    value=os.environ.get("GEMINI_API_KEY", ""),
+    type="password"
+)
 
 assets = {
-    "🥇 XAU/USD (Arany Spot) - Ajánlott": "XAU/USD",
+    "🥇 XAU/USD (Arany Spot) – Ajánlott": "XAU/USD",
+    "🥇 Gold Futures (GC)": "GC",
     "📊 EUR/USD": "EUR/USD",
     "💷 GBP/USD": "GBP/USD",
-    "₿ BTC/USD": "BTC/USD"
+    "₿ BTC/USD": "BTC/USD",
 }
 
 styles = {
-    "🚀 Mikro-Skalp (1 perces)": "1m",
-    "⚡ Skalp (5 perces)": "5m",
-    "⚡ Skalp (15 perces)": "15m",
-    "🌊 Swing (Napi)": "1d"
+    "🚀 Mikro-Skalp (1 perc)": "1m",
+    "⚡ Skalp (5 perc)": "5m",
+    "⚡ Skalp (15 perc)": "15m",
+    "📈 Intraday (1 óra)": "1h",
+    "🌊 Swing (4 óra)": "4h",
+    "🌊 Swing (Napi)": "1d",
 }
 
 st.sidebar.header("📊 Kereskedés")
 selected_asset_name = st.sidebar.selectbox("Instrumentum", list(assets.keys()))
 selected_style_name = st.sidebar.selectbox("Idősík", list(styles.keys()))
-balance_input = st.sidebar.text_input("Számla Tőke ($)", value="10000")
-risk_input = st.sidebar.text_input("Kockázat (%)", value="1.0")
+balance_input = st.sidebar.number_input("Számla tőke ($)", value=10000.0, step=100.0)
+risk_input = st.sidebar.number_input("Kockázat (%)", value=1.0, step=0.1, min_value=0.1, max_value=5.0)
 
-if st.sidebar.button("🚀 Elemzés Indítása", use_container_width=True):
+if st.sidebar.button("🚀 Elemzés Indítása", use_container_width=True, type="primary"):
     if not gemini_api_input:
-        st.error("Kérlek add meg a Gemini API kulcsot az oldalsávban!")
-    elif not twelvedata_api_input:
-        st.error("Kérlek add meg a Twelve Data API kulcsot az oldalsávban!")
+        st.error("Add meg a Gemini API kulcsot!")
+    elif not twelvedata_api_input and "GC" not in selected_asset_name:
+        st.error("Add meg a Twelve Data API kulcsot!")
     else:
         ticker = assets[selected_asset_name]
         interval = styles[selected_style_name]
-        
-        with st.spinner(f"Twelve Data lekérés & AI Elemzés ({ticker})..."):
+
+        with st.spinner(f"Adatlekérés + AI elemzés ({ticker} • {interval})..."):
             try:
-                img_path = generate_chart_image(ticker, interval, twelvedata_api_input)
-                data = analyze_chart(img_path, gemini_api_input, selected_asset_name, selected_style_name)
-                
-                dir_val, entry, sl, tp = data.get('direction', 'NEUTRAL'), data.get('entry'), data.get('sl'), data.get('tp')
-                
+                img_path, df, source = generate_chart_image(
+                    ticker, interval, twelvedata_api_input or "dummy"
+                )
+                last_close = float(df["Close"].iloc[-1])
+                last_time = df.index[-1].strftime("%Y-%m-%d %H:%M")
+
+                data = analyze_chart(
+                    img_path,
+                    gemini_api_input,
+                    selected_asset_name,
+                    selected_style_name,
+                    last_close
+                )
+
+                direction = data.get("direction", "NEUTRAL")
+                entry = data.get("entry")
+                sl = data.get("sl")
+                tp = data.get("tp")
+                confluences = data.get("confluences_found", [])
+                missing = data.get("missing", [])
+                reasoning = data.get("reasoning", "")
+
                 st.markdown("---")
-                if dir_val == "BUY": st.success(f"Irány: {dir_val} 🟢")
-                elif dir_val == "SELL": st.error(f"Irány: {dir_val} 🔴")
-                else: st.warning(f"Irány: {dir_val} 🟠 (Kivárás)")
-                
-                st.markdown(f"**Confluence-ek:** {', '.join(data.get('confluences_found', []))}")
-                
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Belépő", str(entry) if entry else "-")
-                c2.metric("Stop Loss", str(sl) if sl else "-")
-                c3.metric("Take Profit", str(tp) if tp else "-")
-                
-                if dir_val != "NEUTRAL" and entry and sl and tp:
-                    rr, _ = calculate_risk_reward(dir_val, entry, sl, tp)
-                    if rr: st.info(f"R:R Arány -> 1 : {rr:.2f}")
-                    r_usd, size, _ = calculate_position_size(balance_input, risk_input, entry, sl, ticker)
-                    if r_usd:
-                        ca, cb = st.columns(2)
-                        ca.metric("Kockázat", f"${r_usd:.2f}")
-                        cb.metric("Méret", str(size))
-                
+                col_a, col_b, col_c = st.columns([2, 1, 1])
+                with col_a:
+                    if direction == "BUY":
+                        st.success("**Irány: BUY 🟢**")
+                    elif direction == "SELL":
+                        st.error("**Irány: SELL 🔴**")
+                    else:
+                        st.warning("**Irány: NEUTRAL 🟠**")
+
+                with col_b:
+                    st.metric("Utolsó ár", f"{last_close:.2f}")
+                with col_c:
+                    st.caption(f"Forrás: {source}")
+                    st.caption(f"{last_time}")
+
+                st.markdown(f"**Talált confluence-ek:** {', '.join(confluences) if confluences else '—'}")
+                if missing:
+                    st.markdown(f"**Hiányzó feltételek:** {', '.join(missing)}")
+
+                if direction != "NEUTRAL" and entry and sl and tp:
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Belépő", f"{float(entry):.2f}")
+                    c2.metric("Stop Loss", f"{float(sl):.2f}")
+                    c3.metric("Take Profit", f"{float(tp):.2f}")
+                    rr = calculate_risk_reward(direction, entry, sl, tp)
+                    if rr:
+                        c4.metric("R:R", f"1 : {rr}")
+
+                    risk_usd, size = calculate_position_size(balance_input, risk_input, entry, sl, ticker)
+                    if risk_usd and size:
+                        st.info(f"Kockázat: **${risk_usd:.2f}**  |  Ajánlott méret: **{size}**")
+
                 st.markdown("### 📝 Indoklás")
-                st.write(data.get('reasoning', ''))
-                st.image(img_path)
-                
+                st.write(reasoning)
+
+                st.image(img_path, use_container_width=True)
+                st.caption(f"Gyertyák száma: {len(df)} | Generálva: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
             except Exception as e:
-                st.error(f"Hiba: {e}")
+                st.error(f"**Hiba:** {e}")
+
+st.sidebar.markdown("---")
+st.sidebar.caption("Mesterlövész v2.2 • Skalp optimalizált prompt + yfinance fallback")
