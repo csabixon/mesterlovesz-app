@@ -4,3 +4,4 @@ pillow
 google-genai
 pandas
 requests
+yfinance
