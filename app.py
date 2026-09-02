@@ -110,7 +110,6 @@ def get_yfinance_data(symbol: str = "GC=F", interval: str = "5m") -> pd.DataFram
 
 
 def get_data_with_fallback(ticker: str, interval: str, twelvedata_key: str) -> tuple[pd.DataFrame, str]:
-    # Gold Futures: először Twelve Data GC, majd yfinance GC=F
     if ticker.upper() in ["GC", "GC=F"]:
         try:
             if twelvedata_key:
@@ -121,7 +120,6 @@ def get_data_with_fallback(ticker: str, interval: str, twelvedata_key: str) -> t
         df = get_yfinance_data("GC=F", interval)
         return df, "yfinance (GC=F) – fallback"
 
-    # Spot és forex: Twelve Data
     if not twelvedata_key:
         raise ValueError("Twelve Data API kulcs szükséges ehhez az instrumentumhoz")
     df = get_twelvedata_data(ticker, interval, twelvedata_key, outputsize=400)
@@ -240,10 +238,12 @@ Válaszolj KIZÁRÓLAG érvényes JSON formátumban. Semmilyen más szöveget ne
 }}
 """
 
+    # Aktuális, elérhető modellek (2026) – 2.5 / 2.0 kivezetve
     models = [
+        "gemini-3.7-flash",
         "gemini-3.6-flash",
-        "gemini-2.5-flash",
-        "gemini-2.0-flash",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
     ]
     last_error = None
 
@@ -264,6 +264,7 @@ Válaszolj KIZÁRÓLAG érvényes JSON formátumban. Semmilyen más szöveget ne
             except Exception as e:
                 last_error = e
                 err = str(e).upper()
+                # Túlterhelés, kvóta VAGY nem elérhető modell → következő
                 if any(
                     x in err
                     for x in (
@@ -273,10 +274,12 @@ Válaszolj KIZÁRÓLAG érvényes JSON formátumban. Semmilyen más szöveget ne
                         "RESOURCE_EXHAUSTED",
                         "HIGH DEMAND",
                         "QUOTA",
+                        "404",
+                        "NOT_FOUND",
                     )
                 ):
                     time.sleep(1.5 * (attempt + 1))
-                    break  # következő modell
+                    break
                 raise
 
     raise RuntimeError(f"Minden Gemini modell sikertelen. Utolsó hiba: {last_error}")
@@ -447,5 +450,5 @@ if st.sidebar.button("🚀 Elemzés Indítása", use_container_width=True, type=
 
 st.sidebar.markdown("---")
 st.sidebar.caption(
-    "Mesterlövész v2.4 • Modell fallback: 3.6 → 2.5 → 2.0 • yfinance GC fallback"
+    "Mesterlövész v2.5 • Fallback: 3.7 → 3.6 → 3.5 → 3.5-lite • GC yfinance fallback"
 )
